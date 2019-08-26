@@ -1,5 +1,7 @@
 #!/bin/bash
 #
+# please enable key based login to the esxi host for this to work.
+#
 if [ "$1" == '' ]; then echo "$0 hostname"; exit; fi
 HOST=$1
 echo $HOST
