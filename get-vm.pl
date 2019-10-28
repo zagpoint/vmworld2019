@@ -36,7 +36,6 @@ my %opts = (
 #delete $ENV{'https_proxy'};
 Opts::add_options(%opts);
 Opts::parse();
-my $domain = 'vmware.com';
 my $vmname = Opts::get_option('vm');
 my $clustername = Opts::get_option('cluster');
 my $hostname = Opts::get_option('host');
@@ -130,14 +129,16 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 	    $pgname, $co, $cbt,$ip,$hotadd,$gw,$dev,$time,$tt,$tr,$tv,$ts,$tvs,$product,$vmuuid,$birthday,$fcdid, $extraConfig, $media,%hbr);
 	my $vmName = $vm->{'name'};
 	my $dnsName = (defined($vm->guest->{hostName}))?$vm->guest->hostName:'';
-	$dnsName =~ s/$domain// if ($dnsName);
+	$dnsName=~s/.vmware.com// if ($dnsName);
 	if ($dnsName && (lc $vmName ne lc $dnsName)) {$vmName = color("bold red").$vmName.':'.color("bold green").$dnsName.color('reset');}
 
 	$ID = " ($vmName)" if ($ID && ! $short);
 	$vmuuid = (defined $vm->{config}->{instanceUuid})?$vm->config->{instanceUuid}:'';
 	$birthday = (defined $vm->config->{'createDate'})?$vm->config->{'createDate'}:'';
-	$birthday =~ s/T.*Z/Z/;
-	$birthday = ', since '.$birthday if $birthday;
+	#$birthday =~ s/:\d+\.\d+//;
+	$birthday =~ s/T.*Z/z/;
+	$birthday = 'birth: '.$birthday if $birthday;
+	#2019-03-12T05:15:51.736352Z
 	
 	$vm->ViewBase::update_view_data();
 	my $cName = 'Not Found';
@@ -163,7 +164,7 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 	if ($powerState eq 'On') {
 		$powerState = color("green") . $powerState . color('reset');
 		$time = $vm->summary->quickStats->uptimeSeconds;
-		$time = ($time > 86400)?sprintf("%.f", $time/60/60/24).'d':sprintf("%.f", $time/3600).'h';
+		$time = ($time > 86400)?sprintf("%.f", $time/60/60/24).' days':sprintf("%.f", $time/3600).' hrs';
 	} else {
 		# we probably want to figure out how the vm ended up off
 		$powerState = color("red") . $powerState . color('reset');
@@ -223,7 +224,7 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 	$product =~ s/64-bit/x64/g if $product;
 
 	my $h = $vim->get_view(mo_ref => $vm->runtime->host, properties => ['name', 'parent','config.network.portgroup','config.storageDevice.plugStoreTopology.path']); 
-	# let's build an naa to device ID hash here for the array of hashes in $h->{'config.storageDevice.plugStoreTopology.path'}
+	# let's build a naa to device ID hash here for the array of hashes in $h->{'config.storageDevice.plugStoreTopology.path'}
 	my $paths = $h->{'config.storageDevice.plugStoreTopology.path'};
 	my %lunmap = map {
 		if (defined $_->{'device'}) { 
@@ -253,7 +254,7 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 	my $rpool = ($r)?"POOL:$r->{'name'}":'POOL:n/a';
 
 	if (ref($c) eq 'ClusterComputeResource') { $cName = $c->name; }
-	my $host = $h->{'name'} =~ s/.$domain//r;
+	my $host = $h->{'name'} =~ s/.vmware.com//r;
 	
 	if (defined $vm->guest->toolsStatus) {
 		($ts = $vm->guest->toolsStatus->val) =~ s/tools//g;
@@ -271,12 +272,13 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 
 	# basic information
 	if (Opts::option_is_set('short')) {
-		print "$vmName$vOID$ft | $ip | $host$hOID | $cName$cOID | $dcName$dcOID | $server ($connState $powerState $time$birthday)\n";
+		#print "$vmName".color("cyan"). "$vOID $ft | $ip | $host$hOID | $cName$cOID | $dcName$dcOID | $server".color('reset')." ($connState $powerState $time, $birthday)\n";
+		print "$vmName$vOID$ft | $ip | $host$hOID | $cName$cOID | $dcName$dcOID | $server ($connState $powerState $time, $birthday)\n";
 	}	
 	if (Opts::option_is_set('summary')) {
 		my $latency = color('red').'unset'.color('reset');
 
-		# per vm EVC: vm->capability->perVmEvcSupported is true for vmx-14+
+		# pervm EVC: vm->capability->perVmEvcSupported is true for vmx-14+
 		my $evcmode = (defined $vm->{runtime}->{minRequiredEVCModeKey} && $vm->capability->perVmEvcSupported)?
 				", ".color('red')."EVC:".$vm->{runtime}->{minRequiredEVCModeKey}.color('reset'):'';
 		if (defined $vm->config->latencySensitivity) {
@@ -321,7 +323,7 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 		my $mshare = $MEMalloc->shares->level->val . ':' . $MEMalloc->shares->shares;
 		$mshare = ($mshare =~ /normal/i)?color('bold green').$mshare.color('reset'):color('bold red').$mshare.color('reset');
 		
-		# storage could be missing, or incorrect after x-VC migration
+		# storage could be missing, or incorrect after x-VC migration: https://bugzilla.eng.vmware.com/process_bug.cgi
 		my ($committed, $uncommitted, $unshared) = (0,0,0);
 		if (defined $vm->summary->{'storage'}) {
 			$committed = sprintf("%.f", $vm->summary->storage->committed /1024**3);
@@ -339,7 +341,10 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 			if ($_->isa('VirtualEthernetCard')) { push (@nics, $_);}
 			if ($_->isa('VirtualDisk')) {push (@vmdks, $_); }
 			if ($_->isa('VirtualCdrom')) {
-				if ($_->connectable->connected && defined $_->{backing}->{filename}) {$media = $_->backing->fileName; }
+				if ($_->connectable->connected) {
+					if (defined $_->{backing}->{filename}) { $media = $_->backing->fileName;}
+					else {$media = 'UNKNOWN';}
+				}
 			}
 		}
 	}
@@ -504,7 +509,9 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 
 			if($_->backing->isa('VirtualDiskRawDiskMappingVer1BackingInfo')) { $type = ($_->backing->compatibilityMode eq 'physicalMode')? 'pRDM': 'vRDM'; }
 			my $hostID = ($type eq 'pRDM' or $type eq 'vRDM')?' (L'. $lunmap{$naa}.')':'';
+			#printf "%-03s%5s %-5s%-15s%6s %32s %${nlen}s %-50s\n", "#".$diskLabel, $slot, $type, $diskMode,$diskSize.$Unit, lc($uuid),$naa,$fileName.$hostID.$sharing.$linkedclone;
 			printf "%12s%5s %-5s%-15s%6s %32s %${nlen}s %-50s\n", $diskLabel, $slot, $type, $diskMode,$diskSize.$Unit, lc($uuid),$naa,$fileName.$hostID.$sharing.$linkedclone;
+			#printf "%78s%50s\n", ' ', $base . " $fcdid" if ($linkedclone);
 			print "          					$base $fcdid\n" if ($linkedclone);
 		}
 		print "          " . colored("$sh_note\n", "green") if ($sh_note);
@@ -522,11 +529,8 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 				my $childlist = ${$rootsnap}[0]->childSnapshotList; 
 				while ($childlist) {
 					print " => ". ${$childlist}[0]->name .' ('.${$childlist}[0]->snapshot->value .')['. ${$childlist}[0]->createTime.'] ';
-					if (defined ${$childlist}[0]->childSnapshotList) {
-						$childlist = ${$childlist}[0]->childSnapshotList;
-					} else {
-						undef $childlist;
-					}
+					if (defined ${$childlist}[0]->childSnapshotList) { $childlist = ${$childlist}[0]->childSnapshotList;
+					} else { undef $childlist; }
 				}
 			}
 			print "$ID\n";
@@ -561,7 +565,7 @@ foreach my $vm (sort{ncmp ($a->name, $b->name)} @$vms) {
 			my $mb = $vm->config->managedBy->type;
 			print colored(sprintf("%-${len}s: %-20s\n", 'managedBy Type', $mb), 'cyan');
 		}
-		if (%hbr) { foreach my $key (keys %hbr) { 
+		if (%hbr) { foreach my $key (sort keys %hbr) { 
 				my $val = $hbr{$key};
 				$key =~ s/hbr_filter/VR/;
 				print colored(sprintf ("%-23s: %-20s\n", $key, $val),'cyan');}
@@ -606,7 +610,7 @@ sub create_session() {
 	my $start = time;
         my $timeout = 10;
         my ($server) = @_;
-	$server .= '.'. $domain unless ($server =~ /$domain/ || $server =~ /\d+\.\d+\.\d+\.\d+/);
+	$server .= '.vmware.com' unless ($server =~ /\.vmware\.com/ || $server =~ /\d+\.\d+\.\d+\.\d+/);
         my $sessionfile = "$ENV{HOME}/.session-$server";
         my $service_url = "https://$server/sdk";
 

@@ -18,16 +18,16 @@ my %opts = ( dc=> {type => "=s", help => "Optional: data center", required => 0}
 	getlicense => { type=>"", help => "Optional: include license info", required=>0},
 	vcinfo => { type=>"", help => "Optional: get VC information only", required=>0},
 	clusterinfo => { type=>"", help => "Optional: get cluster information only", required=>0},
+	short => { type=>"", help => "concise information only", required=>0},
 );
 #
 # validate options, and connect to the server
 #delete $ENV{'https_proxy'};
 Opts::add_options(%opts);
 Opts::parse();
-my $domain = 'vmware.com';
 my $dcName = Opts::get_option('dc');
 my $server = Opts::get_option('server'); 
-unless ($server =~ /$domain/ || $server =~ /\d+\.\d+\.\d+\.\d+/) {$server .= '.'.$domain;}
+unless ($server =~ /\.vmware\.com/ || $server =~ /\d+\.\d+\.\d+\.\d+/) {$server .= '.vmware.com';}
 my $clusterName = Opts::get_option("cluster");
 my $showvm = Opts::option_is_set("showvm");
 my $detail = Opts::option_is_set("detail");
@@ -36,6 +36,7 @@ my $nohost = Opts::option_is_set("nohost");
 my $getlicense = Opts::option_is_set("getlicense");
 my $vcinfo = Opts::option_is_set("vcinfo");
 my $clusterinfo = Opts::option_is_set("clusterinfo");
+my $short = Opts::option_is_set("short");
 Opts::validate();
 my $username = Opts::get_option('username');
 my $password = Opts::get_option('password');
@@ -46,14 +47,17 @@ die "Failed to establish session...\n" unless (defined $vim->{'service_content'}
 
 my $si = $vim->get_service_instance();
 my $content = $vim->get_service_content();
+#my $authman = $vim->get_view(mo_ref => $content->authorizationManager);
 
 my $ID;
 my $setting = $vim->get_view(mo_ref => $content->setting);
 foreach (@{$setting->setting}) { if ($_->key eq 'instance.id') {$ID = $_->value;}}
+#my $perfman = $vim->get_view(mo_ref => $content->dvSwitchManager);
+#print Dumper $perfman;
 
 # grabbing some extension information, such as SRM and NSX
 my $extension = $vim->get_view(mo_ref => $content->extensionManager, properties => ['extensionList']);
-my ($nsx, $srm, $vum, $vcops,$bde,$vr,$vCC,$appd,$vxrail) = ('') x 9;
+my ($nsx, $srm, $vum, $vcops,$bde,$vr,$vCC,$appd,$vxrail,$hcx) = ('') x 10;
 foreach (@{$extension->extensionList}) {
 	my $key = $_->key;
 	my $server = (defined $_->{'client'})?@{$_->client}[0]->url:(defined $_->{'server'})?@{$_->server}[0]->url:'';
@@ -66,8 +70,7 @@ foreach (@{$extension->extensionList}) {
 
 	$server =~ s#https?://(.*?)[:|/](.*)#$1#g if $server;
 	$server =~ s/(.*?)(\d+\.\d+\.\d+\.\d+)(.*?)/$2/g if $server;
-	$server =~ s#.$domain## if $server;
-	print $server."\n" if ($key =~ /nsxt/);
+	$server =~ s#.vmware.com## if $server;
 
 	my $ver = $_->version;
 
@@ -75,7 +78,7 @@ foreach (@{$extension->extensionList}) {
 	use Socket;
 	my $ip = inet_aton("$server");
 	my $name = gethostbyaddr($ip, AF_INET) if $ip;
-	$name =~ s#.$domain##i if $name;
+	$name =~ s#.vmware.com##i if $name;
 
 	###
 	if ($key =~ 'vcDr') {
@@ -93,10 +96,11 @@ foreach (@{$extension->extensionList}) {
 	if ($key =~ 'vcops') {
 	       	$vcops = ($name)?" | vROps: $name ($ver)":" | vROps: $server ($ver)";
 	}
+	#if ($key =~ 'bigdata') {$bde = ($name)?" | BDE: $name ($ver)":" | BDE: $server ($ver)";}
+	#if ($key =~ 'vccp') {$vCC = ($name)?" | vCC: $name ($ver)":" | vCC: $server ($ver)";}
 	if ($key =~ 'appd') {$appd = ($name)?" | appD: $name ($ver)":" | appD: $server ($ver)";}
-	if ($key =~ 'vxrail') {
-		$vxrail = ($name)?" | vxrail: $name ($ver)":" | vxrail: $server ($ver)";
-	}
+	if ($key =~ 'vxrail') { $vxrail = ($name)?" | vxrail: $name ($ver)":" | vxrail: $server ($ver)"; }
+	if ($key eq 'com.vmware.hybridity') { $hcx = ($name)?" | HCX: $name ($ver)":" | HCX: $server ($ver)";}
 }
 
 # looking at VC settings to figure out database and SSO
@@ -107,7 +111,7 @@ if (eval {$optionManager->QueryOptions(name=>'config.vpxd.odbc.dbtype')}) { $dbt
 if (eval {$optionManager->QueryOptions(name=>'config.vpxd.odbc.dsn')}) { $dbdsn = @{$optionManager->QueryOptions(name=>'config.vpxd.odbc.dsn')}[0]->value;}
 if (eval {$optionManager->QueryOptions(name=>'config.vpxd.sso.default.admin')}) { $ssoadmin = @{$optionManager->QueryOptions(name=>'config.vpxd.sso.default.admin')}[0]->value;}
 $sso =~ s/.*?\/\/(.*?)\/.*/$1/g;
-$sso =~ s/\.$domain//g;
+$sso =~ s/\.vmware.com//g;
 if ($server =~ m/$sso/) { 
 	$sso = '';
 }
@@ -123,7 +127,8 @@ my $DSN = ($dbtype eq 'embedded')?" DB: embedded":"| DB: $dbdsn ($dbtype)";
 $ssoadmin = ' (' . $ssoadmin . ')' if $ssoadmin;
 $sso = "PSC: $sso$ssoadmin |" if $sso;
 my $release = ($map{'vc'}{$vcBuild})?$map{'vc'}{$vcBuild}:'';
-print color("bold magenta") . "VC: $server $vcUUID (#$ID)".color('reset')." | $vcType $vcBuild-$release | $sso$DSN$nsx$srm$vr$vcops$vum$bde$vCC$appd$vxrail\n";
+#print color("bold magenta") . "VC: $server $vcUUID (#$ID)".color('reset')." | $vcType $vcBuild-$release | $sso$DSN$nsx$srm$vr$vcops$vum$bde$vCC$appd$vxrail$hcx\n";
+print color("bold magenta") . "VC: $server ".color('reset')." | $vcType $vcBuild-$release | $sso$DSN$nsx$srm$vr$vcops$vum$bde$vCC$appd$vxrail$hcx\n";
 $vcinfo && exit;
 if ($getlicense) {
 	my $lm = $content->licenseManager;
@@ -183,13 +188,16 @@ my @sorted_clusters = sort {ncmp ($a->name, $b->name)} @$clusters;
 my $numVM = 0;
 foreach (@sorted_clusters)  {  
 	my $EVC = (defined $_->summary && defined $_->summary->currentEVCModeKey)?':'.color('red').$_->summary->currentEVCModeKey.color('reset'):'';
-	my $DRS ='';
-       	$DRS = $_->{configurationEx}->{drsConfig}->{defaultVmBehavior}->{val} if (defined $_->{configurationEx}->{drsConfig});
+	my ($DRS, $HA) ='' x 2;
+	$HA = ($_->{configurationEx}->{dasConfig}->{enabled})?'Enabled':color('red') . 'Disabled' . color('reset');
+       	$DRS = ($_->{configurationEx}->{drsConfig}->{enabled})?$_->{configurationEx}->{drsConfig}->{defaultVmBehavior}->{val}:color('red') . 'Disabled' . color('reset');
 	$DRS = ':DRS-' . $DRS if $DRS;
+	$HA = ':HA-' . $HA if $HA;
+
 	if (defined ($_->host)) {
 		my $nhost = scalar @{$_->host};
 		my $cluster_moid = ($detail && defined $_->{mo_ref})?"::". $_->{'mo_ref'}->value:'';
-		print color('bold green') . $server. $cluster_moid .":".$_->name. $EVC . color('reset') . color("cyan"). $DRS. color("reset");
+		print color('bold green') . $server. $cluster_moid .":".$_->name. $EVC . color('reset') . color("cyan"). $DRS. $HA . color("reset");
 
 		# vSAN specific stuff
 		my $isVsan = 0;
@@ -197,6 +205,7 @@ foreach (@sorted_clusters)  {
 			if ($_->{'configurationEx'}->{'vsanConfigInfo'}->{'enabled'}) {
 				my ($ds, $free, $cap, $usepct, $usebar);
 
+				#$ds = $vim->get_views(mo_ref_array => $_->datastore, properties => ['summary','vm']);
 				$ds = $vim->get_views(mo_ref_array => $_->datastore);
 				foreach my $item (@$ds) { 
 					# we only care about vsan space availability and vm count.
@@ -208,36 +217,38 @@ foreach (@sorted_clusters)  {
 						if (! defined $item->{'info'}->{'aliasOf'}) {
 							$cap += sprintf("%.f",$item->summary->capacity/1024**4);
 							$free += sprintf("%.f", $item->summary->freeSpace/1024**4);
-							$usepct = sprintf("%.1f", ($cap-$free)/$cap)*10 if $cap;
+							$usepct = sprintf("%.2f", ($cap-$free)/$cap)*10 if $cap;
 							$usebar = sprintf "\x{25aa}" x $usepct . "\x{25ab}" x (10-$usepct);
 						}
 					}
 				}
-				print ' '.color('on_green')."vSAN-ENABLED".color('reset')." [UUID: ".$_->{'configurationEx'}->{'vsanConfigInfo'}->defaultConfig->uuid.",Storage: ${cap}TB $usebar, VMs: $numVM]";
+				#print ' '.color('on_green')."vSAN-ENABLED".color('reset')." [UUID: ".$_->{'configurationEx'}->{'vsanConfigInfo'}->defaultConfig->uuid.",Storage: ${cap}TB $usebar $usepct, VMs: $numVM]";
+				print ' '.color('on_green')."vSAN-ENABLED".color('reset')." [Storage: ${cap}TB $usebar ". $usepct*10 ."% used] ($numVM VMs,";
 				$isVsan = 1;
 			}
 		}
-		($nhost < 2)? print " ($nhost host)\n":print " ($nhost hosts)\n";
+		($nhost < 2)? print " $nhost host)\n":print " $nhost hosts)\n";
 		$clusterinfo && next;
 
 		# get some creative use of get_view!
 		my @sorted = sort{ncmp (${$vim->get_view(mo_ref=>$a, properties=>['name'])}{name}, ${$vim->get_view(mo_ref=>$b, properties=>['name'])}{name})} @{$_->host};
 
 		# I need to pre-walk the cluster and figure out the hostname length:
+
 		my $hlen = 0;
 		foreach (@sorted) { 
 			my $name = ${$vim->get_view(mo_ref => $_, properties => ['name'])}{'name'};
-			$name =~ s/.$domain//;
+			$name =~ s/.vmware.com//;
 			$hlen = length $name if (length $name > $hlen);
 		}
 		
 		foreach my $host_ref (@sorted) {  
 			my $host_view = $vim->get_view(mo_ref => $host_ref, properties => ['vm','name','config.product', 'runtime.connectionState',
 					'runtime.dasHostState','runtime.inMaintenanceMode','parent','summary','config.network.vnic','recentTask']);
-			my $ipaddr = ' ';
+			my $ipaddr = '';
 			if ($detail) {
 				# assuming vmk0 is the management IP. may not aways be true.
-				foreach (@{$host_view->{'config.network.vnic'}}) { $ipaddr = $_->spec->ip->ipAddress if ($_->device eq 'vmk0');}
+				foreach (@{$host_view->{'config.network.vnic'}}) { $ipaddr = sprintf("%-15s", $_->spec->ip->ipAddress) if ($_->device eq 'vmk0');}
 			}
 
 			my $uptime = (defined $host_view->{summary}->{quickStats}->uptime)?$host_view->{summary}->{quickStats}->uptime:0;
@@ -250,18 +261,23 @@ foreach (@sorted_clusters)  {
 			my $memcap = $host_view->{summary}->{hardware}->memorySize/1024**2; #in MB 
 			my $cpuusage = $host_view->{summary}->{quickStats}->overallCpuUsage; #in mHZ
 			my $memusage = $host_view->{summary}->{quickStats}->overallMemoryUsage; #in MB
+			$cpuusage = 0 unless $cpuusage;
+			$memusage = 0 unless $memusage;
 			my ($cpupct, $mempct) = (0,0);
-			$cpupct = sprintf("%.1f", $cpuusage/$cpucap)*10 if ($cpuusage);
-			$mempct = sprintf("%.1f", $memusage/$memcap)*10 if ($memusage); 
-			my $cpubar = sprintf "\x{25aa}" x $cpupct . "\x{25ab}" x (10-$cpupct);
-			my $membar = sprintf "\x{25aa}" x $mempct . "\x{25ab}" x (10-$mempct);
+			$cpupct = sprintf("%.1f", $cpuusage/$cpucap)*10;
+			$mempct = sprintf("%.1f", $memusage/$memcap)*10;
+		
+			# use unicode block element instead here.
+			my $cpubar = sprintf "\x{2584}" x $cpupct . "\x{2024}" x (10-$cpupct);
+			my $membar = sprintf "\x{2584}" x $mempct . "\x{2024}" x (10-$mempct);
 			my $width = ($detail)?11:0;
 			my $host_moid = sprintf("%-${width}s", ($detail)?$host_view->{'mo_ref'}->value:'');
-			(my $hostname = $host_view->name) =~ s/.$domain//;
+			(my $hostname = $host_view->name) =~ s/.vmware.com//;
 			$hostname = sprintf("%-${hlen}s", $hostname);
 			$connState = ($host_view->{'runtime.connectionState'}->val eq 'connected')?'':color('red')." [".$host_view->{'runtime.connectionState'}->val."]".color('reset');
-			$haState = (defined $host_view->{'runtime.dasHostState'}->{'state'})?"[".$host_view->{'runtime.dasHostState'}->{'state'}."]":'';
-			$haState = "[slave ]" if ($haState eq '[connectedToMaster]');
+			$haState = (defined $host_view->{'runtime.dasHostState'}->{'state'})?$host_view->{'runtime.dasHostState'}->{'state'}:'';
+			$haState = "slave " if ($haState eq 'connectedToMaster');
+			$haState = color('red') . $haState . color('reset') unless ($haState =~ /master|slave/);
 			$inMaint = ($host_view->{'runtime.inMaintenanceMode'} eq 'true')?color("red").' (Maintenance)'.color("reset"):'';
 			$hostBuild = (defined($host_view->{'config.product'}))? $host_view->{'config.product'}->build:color('red').'***Build ?***'.color('reset');
 			if ($hostBuild =~ /\d+/) {
@@ -279,8 +295,10 @@ foreach (@sorted_clusters)  {
 
 			# Get hardware model info
 			$hw = $host_view->{summary}->{hardware}->model;
-			(my $vendor = $host_view->{summary}->{hardware}->vendor) =~ s/(\S+).*/$1/g;
-			#$hw = "$vendor $hw"; 
+			(my $vendor = $host_view->{summary}->{hardware}->{vendor}) =~ s/^(\S+).*/$1/g;
+			$hw = $vendor . $hw unless $hw =~ /$vendor/i; 
+			$hw =~ s/PowerEdge//i;
+			$hw =~ s/Proliant//i;
 
 			# getting S/N
 			if (defined $host_view->{summary}->{hardware}->otherIdentifyingInfo) {
@@ -307,7 +325,12 @@ foreach (@sorted_clusters)  {
 			} else { $genCPU = 'UNKNOWN';}
 
 			my $symbol = "\x{26A1}"; # unicode cloud ☁  2601 or power 26A1
-			print "   $host_moid $ipaddr $hostname [$hostBuild-$hostVersion] [$hw] [$SN] [$genCPU $numCPU $typeCPU $cpubar] [$memory $membar] $haState $uptime$inMaint$connState" unless $nohost;
+			if ($short) { 
+				print "$host_moid $ipaddr $hostname [$hostBuild-$hostVersion] [$hw] $SN $uptime$inMaint$connState" unless $nohost; 
+			}
+			else {
+				print "$host_moid $ipaddr $hostname [$hostBuild-$hostVersion] [$hw] $SN [$genCPU $numCPU $typeCPU $cpubar] [$memory $membar] $haState $uptime$inMaint$connState" unless $nohost; 
+			}	
 
 			if (defined ($host_view->vm)) {
 				my $nvm = scalar @{$host_view->vm};
@@ -355,7 +378,7 @@ foreach (@sorted_clusters)  {
 
 					$IP = " [$IP]" if $IP;
 					$MAC = " [$MAC]" if $MAC;
-					$DNSname =~ s/.$domain// unless ($DNSname eq '');
+					$DNSname =~ s/.vmware.com// unless ($DNSname eq '');
 					my $dns=(($DNSname ne '') && (lc $DNSname ne lc $vm->name))?"($DNSname)":'';
 
 					# get the OS/product

@@ -5,7 +5,7 @@ use VMware::VIRuntime;
 use Term::ANSIColor;
 use Data::Dumper;
 ##############################################
-# Query vm configuration and stats           #
+# Query network configuration                #
 ##############################################
 # Written by: Zaigui Wang
 #
